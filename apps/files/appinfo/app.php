@@ -27,3 +27,14 @@ $templateManager->registerTemplate('application/vnd.oasis.opendocument.spreadshe
 		"name" => $l->t('All files')
 	)
 );
+
+if (\OCP\App::isEnabled('files_encryption')) {
+	// Use two hooks to allow encryption to initialize correctly before copying
+	// 1. when the files folder is created remember to copy the skeleton
+	\OCP\Util::connectHook('OC_Filesystem', 'createUserFiles', '\OC_Util', 'setCopySkeletonFlag');
+
+	// 2. when setup is complete trigger the actual copying.
+	\OCP\Util::connectHook('OCA\Encryption\Hooks', 'initialized', '\OC_Util', 'copySkeleton');
+} else {
+	\OCP\Util::connectHook('OC_Filesystem', 'createUserFiles', '\OC_Util', 'copySkeleton');
+}

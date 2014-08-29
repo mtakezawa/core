@@ -133,6 +133,8 @@ class Hooks {
 			}
 		}
 
+		\OC_Hook::emit('OCA\Encryption\Hooks', 'initialized', array('uid' => $params['uid']));
+
 		return $result;
 	}
 

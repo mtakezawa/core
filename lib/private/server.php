@@ -276,6 +276,8 @@ class Server extends SimpleContainer implements IServerContainer {
 				return null;
 			}
 			$userId = $user->getUID();
+		} else {
+			$user = $this->getUserManager()->get($userId);
 		}
 		$dir = '/' . $userId;
 		$root = $this->getRootFolder();
@@ -283,6 +285,7 @@ class Server extends SimpleContainer implements IServerContainer {
 
 		if (!$root->nodeExists($dir)) {
 			$folder = $root->newFolder($dir);
+			\OC_Hook::emit('OC_Filesystem', 'createUserHome', array('user' => $user, 'folder' => $folder));
 		} else {
 			$folder = $root->get($dir);
 		}
@@ -290,6 +293,7 @@ class Server extends SimpleContainer implements IServerContainer {
 		$dir = '/files';
 		if (!$folder->nodeExists($dir)) {
 			$folder = $folder->newFolder($dir);
+			\OC_Hook::emit('OC_Filesystem', 'createUserFiles', array('user' => $user, 'folder' => $folder));
 		} else {
 			$folder = $folder->get($dir);
 		}

@@ -12,6 +12,13 @@ class OC_Util {
 	private static $rootMounted=false;
 	private static $fsSetup=false;
 
+	/**
+	 * @var string $copySkeleton status indicating if the skeleton needs to be copied
+	 * T = true, F = false, C = called, D = done
+	 * C&D are used to catch race conditions in the hook execution order when encryption is enabled
+	 */
+	private static $copySkeleton = 'F'; // false
+
 	private static function initLocalStorageRootFS() {
 		// mount local file backend as root
 		$configDataDirectory = OC_Config::getValue( "datadirectory", OC::$SERVERROOT."/data" );
@@ -114,15 +121,6 @@ class OC_Util {
 				return $storage;
 			});
 
-			// copy skeleton for local storage only
-			if ( ! isset( $objectStore ) ) {
-				$userRoot = OC_User::getHome($user);
-				$userDirectory = $userRoot . '/files';
-				if( !is_dir( $userDirectory )) {
-					mkdir( $userDirectory, 0755, true );
-					OC_Util::copySkeleton($userDirectory);
-				}
-			}
 
 			$userDir = '/'.$user.'/files';
 
@@ -132,7 +130,11 @@ class OC_Util {
 			$fileOperationProxy = new OC_FileProxy_FileOperations();
 			OC_FileProxy::register($fileOperationProxy);
 
+			//trigger creation of user home and /files folder, fires hooks
+			\OC::$server->getUserFolder($user);
+
 			OC_Hook::emit('OC_Filesystem', 'setup', array('user' => $user, 'user_dir' => $userDir));
+
 		}
 		return true;
 	}
@@ -204,31 +206,80 @@ class OC_Util {
 	}
 
 	/**
-	 * copies the user skeleton files into the fresh user home files
-	 * @param string $userDirectory
+	 * copies the skeleton to the users /files
+	 *
+	 * @param array $params
 	 */
-	public static function copySkeleton($userDirectory) {
-		$skeletonDirectory = OC_Config::getValue('skeletondirectory', \OC::$SERVERROOT.'/core/skeleton');
+	public static function copySkeleton(array $params) {
+		if (isset($params['user']) && $params['user'] instanceof \OC\User\User) {
+			// we were called by the createUserFiles hook
+			$uid = $params['user']->getUID();
+		} else if (isset($params['uid']) && self::$copySkeleton === 'T') {
+			// we were called by the post_login hook
+			$uid = $params['uid'];
+
+			// check that the encryption has been fully initialized
+			if (\OCP\App::isEnabled('files_encryption')
+				&& \OC::$session->get('encryptionInitialized') !== \OCA\Encryption\Session::INIT_SUCCESSFUL
+			) {
+				\OCP\Util::writeLog(
+					'files',
+					'copySkeleton has received the post_login hook before files_encryption has been initialized.',
+					\OCP\Util::ERROR
+				);
+				return;
+			}
+		} else {
+			self::$copySkeleton = 'C'; // Called
+			return;
+		}
+		$userDirectory = \OC::$server->getUserFolder($uid);
+		$skeletonDirectory = \OCP\Config::getSystemValue('skeletondirectory', \OC::$SERVERROOT . '/core/skeleton');
+
 		if (!empty($skeletonDirectory)) {
-			OC_Util::copyr($skeletonDirectory , $userDirectory);
+			\OCP\Util::writeLog(
+				'files_skeleton',
+				'copying skeleton for '.$uid.' from '.$skeletonDirectory.' to '.$userDirectory->getFullPath('/'),
+				\OCP\Util::DEBUG
+			);
+			self::copyr($skeletonDirectory, $userDirectory);
+			// update the file cache
+			$userDirectory->getStorage()->getScanner()->scan('', \OC\Files\Cache\Scanner::SCAN_RECURSIVE);
+		}
+		self::$copySkeleton = 'D'; // Done
+	}
+
+	/*
+	 * called by the OC_Filesystem createUserFiles Hook
+	 */
+	public static function setCopySkeletonFlag(array $params) {
+		if (self::$copySkeleton === 'D') {
+			return; // nothing to do
+		} else if (self::$copySkeleton === 'C') {
+			// fix the order of hooks and recall
+			self::copySkeleton($params);
+		} else {
+			self::$copySkeleton = 'T'; // TRUE
 		}
 	}
 
 	/**
-	 * copies a directory recursively
+	 * copies a directory recursively by using streams
+	 *
 	 * @param string $source
-	 * @param string $target
+	 * @param \OCP\Files\Folder $target
 	 * @return void
 	 */
-	public static function copyr($source,$target) {
+	public static function copyr($source, \OCP\Files\Folder $target) {
 		$dir = opendir($source);
-		@mkdir($target);
-		while(false !== ( $file = readdir($dir)) ) {
-			if ( !\OC\Files\Filesystem::isIgnoredDir($file) ) {
-				if ( is_dir($source . '/' . $file) ) {
-					OC_Util::copyr($source . '/' . $file , $target . '/' . $file);
+		while (false !== ($file = readdir($dir))) {
+			if (!\OC\Files\Filesystem::isIgnoredDir($file)) {
+				if (is_dir($source . '/' . $file)) {
+					$child = $target->newFolder($file);
+					self::copyr($source . '/' . $file, $child);
 				} else {
-					copy($source . '/' . $file,$target . '/' . $file);
+					$child = $target->newFile($file);
+					stream_copy_to_stream(fopen($source . '/' . $file,'r'), $child->fopen('w'));
 				}
 			}
 		}
